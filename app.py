@@ -184,20 +184,49 @@ if not st.session_state.grafo_app:
     st.session_state.grafo_app = workflow.compile(checkpointer=MemorySaver())
 
 # --- CHAT ---
+# 1. Exibir mensagens antigas
 for msg in st.session_state.mensagens:
-    with st.chat_message(msg["role"]): st.markdown(msg["content"])
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
+# 2. Input do usuário
 if prompt := st.chat_input("Dúvida sobre as políticas?"):
-    if not os.environ.get("GOOGLE_API_KEY"): st.stop()
+    # Verifica API Key
+    if not os.environ.get("GOOGLE_API_KEY"):
+        st.error("Por favor, configure a API Key na barra lateral.")
+        st.stop()
     
+    # Adiciona pergunta ao histórico e exibe
     st.session_state.mensagens.append({"role": "user", "content": prompt})
-    with st.chat_message("user"): st.markdown(prompt)
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
+    # 3. Processamento do Assistente
     with st.chat_message("assistant"):
         with st.spinner(f"Consultando {MODELO_ESCOLHIDO}..."):
             resp = ""
-            for ev in st.session_state.grafo_app.stream({"pergunta": prompt}, config={"configurable": {"thread_id": "user1"}}):
-                for v in ev.values():
-                    if "resposta" in v: resp = v["resposta"]
-            if not resp: resp = "Erro ao processar."
-            st.markdown
+            try:
+                # Executa o grafo
+                for ev in st.session_state.grafo_app.stream(
+                    {"pergunta": prompt}, 
+                    config={"configurable": {"thread_id": "user1"}}
+                ):
+                    for v in ev.values():
+                        if "resposta" in v:
+                            resp = v["resposta"]
+                
+                # Se após o loop a resposta estiver vazia, define mensagem padrão
+                if not resp:
+                    resp = "Não consegui encontrar uma resposta nos documentos."
+                
+                # --- AQUI ESTAVA O PROBLEMA ---
+                # Garanta que está exatamente assim, COM parênteses:
+                st.markdown(resp)
+                # ------------------------------
+
+            except Exception as e:
+                resp = f"Ocorreu um erro técnico: {e}"
+                st.error(resp)
+    
+    # Salva resposta no histórico
+    st.session_state.mensagens.append({"role": "assistant", "content": resp})
