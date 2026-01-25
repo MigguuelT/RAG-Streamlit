@@ -1,10 +1,10 @@
 streamlit
-langchain-google-genai>=1.0.3
-langchain-community
-langchain-core
+langchain-google-genai>=1.0.7
+langchain-community>=0.2.10
+langchain-core>=0.2.20
 langchain-text-splitters
 langgraph
 faiss-cpu
 pymupdf
-pydantic>=2.7.0
-google-generativeai
+pydantic>=2.8.0
+google-generativeai>=0.7.0
