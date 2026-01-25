@@ -114,6 +114,7 @@ class AgentState(TypedDict):
     resposta: Optional[str]
 
 # CORREÇÃO 1: Funções blindadas com passagem explícita de chave e try/except
+# --- SUBSTITUIR NO SEU CÓDIGO (Versão com Prompt Mais Forte) ---
 def node_triagem(state: AgentState):
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
@@ -127,21 +128,40 @@ def node_triagem(state: AgentState):
         )
         structured_llm = llm.with_structured_output(TriagemOut)
         
-        system_msg = """Classifique a mensagem:
-        - AUTO_RESOLVER: Dúvidas sobre documentos/políticas.
-        - PEDIR_INFO: Mensagens vagas.
-        - ABRIR_CHAMADO: Solicitações de exceção ou acesso."""
+        # PROMPT REFORÇADO PARA EVITAR "PEDIR_INFO" EM EXCESSO
+        system_msg = """Você é um especialista em classificação de suporte nível 1.
+        Sua missão é direcionar a pergunta do usuário para uma das 3 categorias abaixo.
+        
+        Regras de Classificação:
+        1. AUTO_RESOLVER: Escolha essa opção para QUALQUER pergunta que busque informações, dúvidas, regras, valores ou procedimentos. Mesmo que pareça vaga, tente resolver. Ex: "como funciona?", "pode isso?", "reembolso", "internet".
+        2. ABRIR_CHAMADO: Apenas para solicitações de AÇÃO ou PERMISSÃO explícita. Ex: "liberar meu acesso", "quero uma exceção", "meu PC quebrou".
+        3. PEDIR_INFO: Apenas para cumprimentos simples ("oi", "olá", "bom dia") ou frases completamente sem sentido.
+
+        Na dúvida, escolha AUTO_RESOLVER.
+        """
         
         prompt = ChatPromptTemplate.from_messages([("system", system_msg), ("human", "{input}")])
         chain = prompt | structured_llm
         resultado = chain.invoke({"input": state["pergunta"]})
+        
+        # --- DEBUG VISUAL (Para você ver o que está acontecendo) ---
+        decisao = resultado.decisao
+        if decisao == "AUTO_RESOLVER":
+            st.toast(f"🤖 Decisão: Consultar Documentos (Auto Resolver)", icon="📚")
+        elif decisao == "ABRIR_CHAMADO":
+            st.toast(f"🤖 Decisão: Abrir Chamado", icon="🎫")
+        else:
+            st.toast(f"🤖 Decisão: Pedir Mais Info (Não entendi)", icon="❓")
+        # -----------------------------------------------------------
+
         return {"triagem": resultado.model_dump()}
         
     except Exception as e:
         print(f"Erro Triagem: {e}")
+        # Fallback de segurança
         return {
-            "triagem": {"decisao": "PEDIR_INFO", "urgencia": "BAIXA"}, 
-            "resposta": "Desculpe, tive um problema técnico ao analisar sua pergunta. Verifique sua API Key."
+            "triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}, # Mudamos o fallback para tentar responder mesmo com erro
+            "resposta": None
         }
 
 def node_auto_resolver(state: AgentState):
