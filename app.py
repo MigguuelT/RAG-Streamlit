@@ -32,11 +32,16 @@ if "grafo_app" not in st.session_state:
 with st.sidebar:
     st.header("📂 Configuração")
     
-    # Input da API Key (Para segurança)
-    api_key_input = st.text_input("Gemini API Key", type="password")
-    if api_key_input:
-        # CORREÇÃO 2: .strip() para remover espaços invisíveis
-        os.environ["GOOGLE_API_KEY"] = api_key_input.strip()
+    # 1. Tenta pegar a chave dos Secrets do Streamlit
+    if "GOOGLE_API_KEY" in st.secrets:
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+        st.success("✅ API Key carregada dos Secrets!")
+    
+    # 2. Se não achou nos Secrets, pede na tela
+    if not os.environ.get("GOOGLE_API_KEY"):
+        api_key_input = st.text_input("Gemini API Key", type="password")
+        if api_key_input:
+            os.environ["GOOGLE_API_KEY"] = api_key_input.strip()
     
     st.divider()
     
