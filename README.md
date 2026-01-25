@@ -1,0 +1,30 @@
+# 🤖 Assistente de Service Desk com IA (RAG + LangGraph)
+
+Este projeto é um assistente virtual inteligente construído com **Streamlit**, **LangGraph** e **Google Gemini**. Ele utiliza a técnica de RAG (Retrieval-Augmented Generation) para responder perguntas com base em documentos PDF carregados pelo usuário (como políticas internas, manuais ou contratos).
+
+O diferencial deste agente é sua capacidade de **triagem**: ele decide autonomamente se deve responder a dúvida usando os documentos, abrir um chamado de suporte ou pedir mais informações ao usuário.
+
+## ✨ Funcionalidades
+
+- **📂 Upload de Documentos:** Suporte para múltiplos arquivos PDF via barra lateral.
+- **🧠 RAG Inteligente:** Indexação e busca vetorial usando FAISS e Embeddings do Google.
+- **🔀 Fluxo de Decisão (LangGraph):**
+  - **Auto-Resolver:** Responde dúvidas consultando a base de conhecimento.
+  - **Abrir Chamado:** Identifica solicitações de acesso ou exceções e simula a abertura de um ticket com nível de urgência.
+  - **Pedir Info:** Solicita mais detalhes caso a pergunta seja vaga.
+- **💬 Histórico de Chat:** Mantém o contexto da conversa durante a sessão.
+
+## 🛠️ Tecnologias Utilizadas
+
+- **Frontend:** Streamlit
+- **LLM & Embeddings:** Google Gemini (via `langchain-google-genai`)
+- **Orquestração:** LangGraph & LangChain
+- **Banco Vetorial:** FAISS (CPU)
+- **Processamento de PDF:** PyMuPDF
+
+## 🚀 Como Rodar Localmente
+
+1. **Clone o repositório**
+   ```bash
+   git clone [https://github.com/seu-usuario/seu-repo.git](https://github.com/seu-usuario/seu-repo.git)
+   cd seu-repo
