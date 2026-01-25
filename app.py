@@ -115,20 +115,21 @@ class AgentState(TypedDict):
 
 # CORREÇÃO 1: Funções blindadas com passagem explícita de chave e try/except
 # --- SUBSTITUIR NO SEU CÓDIGO (Versão com Prompt Mais Forte) ---
+# --- SUBTITUIR A FUNÇÃO DE TRIAGEM ---
 def node_triagem(state: AgentState):
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         return {"triagem": {"decisao": "PEDIR_INFO", "urgencia": "BAIXA"}, "resposta": "Erro: API Key não configurada."}
 
     try:
+        # ALTERAÇÃO AQUI: Usando o nome mais específico do modelo
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", 
+            model="gemini-1.5-flash-latest", 
             temperature=0,
             google_api_key=api_key
         )
         structured_llm = llm.with_structured_output(TriagemOut)
         
-        # PROMPT REFORÇADO PARA EVITAR "PEDIR_INFO" EM EXCESSO
         system_msg = """Você é um especialista em classificação de suporte nível 1.
         Sua missão é direcionar a pergunta do usuário para uma das 3 categorias abaixo.
         
@@ -144,7 +145,7 @@ def node_triagem(state: AgentState):
         chain = prompt | structured_llm
         resultado = chain.invoke({"input": state["pergunta"]})
         
-        # --- DEBUG VISUAL (Para você ver o que está acontecendo) ---
+        # Debug Visual
         decisao = resultado.decisao
         if decisao == "AUTO_RESOLVER":
             st.toast(f"🤖 Decisão: Consultar Documentos (Auto Resolver)", icon="📚")
@@ -152,18 +153,17 @@ def node_triagem(state: AgentState):
             st.toast(f"🤖 Decisão: Abrir Chamado", icon="🎫")
         else:
             st.toast(f"🤖 Decisão: Pedir Mais Info (Não entendi)", icon="❓")
-        # -----------------------------------------------------------
 
         return {"triagem": resultado.model_dump()}
         
     except Exception as e:
         print(f"Erro Triagem: {e}")
-        # Fallback de segurança
         return {
-            "triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}, # Mudamos o fallback para tentar responder mesmo com erro
+            "triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}, 
             "resposta": None
         }
 
+# --- SUBSTITUIR A FUNÇÃO AUTO RESOLVER ---
 def node_auto_resolver(state: AgentState):
     if not st.session_state.vectorstore:
         return {"resposta": "Por favor, carregue os documentos na barra lateral primeiro."}
@@ -173,21 +173,36 @@ def node_auto_resolver(state: AgentState):
     try:
         retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
         docs = retriever.invoke(state["pergunta"])
+        
+        # Se não achou nada relevante, avisa
+        if not docs:
+            return {"resposta": "Não encontrei informações sobre isso nos documentos fornecidos."}
+
         contexto = "\n\n".join([d.page_content for d in docs])
         
+        # ALTERAÇÃO AQUI: Usando o nome mais específico do modelo
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash", 
+            model="gemini-1.5-flash-latest", 
             temperature=0,
             google_api_key=api_key
         )
-        template = """Responda com base no contexto: {contexto}. Pergunta: {pergunta}"""
+        
+        template = """Você é um assistente útil. Responda à pergunta do usuário usando APENAS o contexto abaixo.
+        Se a resposta não estiver no contexto, diga "Não encontrei essa informação nos documentos".
+        
+        Contexto:
+        {contexto}
+        
+        Pergunta: 
+        {pergunta}
+        """
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | llm
         res = chain.invoke({"contexto": contexto, "pergunta": state["pergunta"]})
         return {"resposta": res.content}
         
     except Exception as e:
-        return {"resposta": f"Erro ao consultar documentos: {str(e)}"}
+        return {"resposta": f"Erro ao gerar resposta (LLM): {str(e)}"}
 
 def node_abrir_chamado(state: AgentState):
     urgencia = state["triagem"]["urgencia"]
