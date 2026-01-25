@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Agente RAG - Service Desk", page_icon="🤖")
 
-st.title("🤖 Assistente de Service Desk (Gemini 2.5)")
+st.title("🤖 Assistente de Service Desk")
 st.markdown("Faça upload das políticas (PDF) na barra lateral e tire suas dúvidas!")
 
 # --- ESTADO DA SESSÃO ---
@@ -40,18 +40,17 @@ with st.sidebar:
         if api_key_input:
             os.environ["GOOGLE_API_KEY"] = api_key_input.strip()
             
-    # --- DIAGNÓSTICO DE MODELOS (Seu melhor amigo agora) ---
+    # --- DIAGNÓSTICO DE MODELOS ---
     if os.environ.get("GOOGLE_API_KEY"):
         st.divider()
-        with st.expander("🛠️ Diagnóstico: Modelos Ativos"):
+        with st.expander("🛠️ Diagnóstico: Modelos"):
             try:
                 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                st.write("Modelos encontrados na sua conta:")
-                st.code(models)
+                st.write(models)
             except Exception as e:
-                st.error(f"Erro ao listar: {e}")
-    # -------------------------------------------------------
+                st.error(f"Erro: {e}")
+    # -------------------------------
     
     st.divider()
     uploaded_files = st.file_uploader("Carregar documentos (PDF)", type="pdf", accept_multiple_files=True)
@@ -76,7 +75,7 @@ def processar_pdfs(arquivos):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         chunks = text_splitter.split_documents(docs)
         
-        # Embeddings costumam usar o modelo 004 independente da versão do chat
+        # Embeddings usam o modelo 004 (Melhor performance)
         embeddings = GoogleGenerativeAIEmbeddings(
             model="models/text-embedding-004",
             google_api_key=os.environ.get("GOOGLE_API_KEY")
@@ -91,8 +90,8 @@ if processar_btn and uploaded_files:
 
 # --- LÓGICA DO AGENTE (LANGGRAPH) ---
 
-# Definição do Modelo alvo (Aqui entra o 2.5)
-MODELO_ESCOLHIDO = "gemini-2.5-flash"
+# SOLUÇÃO: Usar o modelo de produção estável (Cota Alta)
+MODELO_ESCOLHIDO = "gemini-1.5-flash"
 
 class TriagemOut(BaseModel):
     decisao: Literal["AUTO_RESOLVER", "PEDIR_INFO", "ABRIR_CHAMADO"]
@@ -121,14 +120,13 @@ def node_triagem(state: AgentState):
         chain = ChatPromptTemplate.from_messages([("system", system_msg), ("human", "{input}")]) | structured_llm
         res = chain.invoke({"input": state["pergunta"]})
         
-        # Toast de Debug
         icone = "📚" if res.decisao == "AUTO_RESOLVER" else "🎫" if res.decisao == "ABRIR_CHAMADO" else "❓"
         st.toast(f"Decisão: {res.decisao}", icon=icone)
         
         return {"triagem": res.model_dump()}
     except Exception as e:
-        st.error(f"Erro na Triagem ({MODELO_ESCOLHIDO}): {e}")
-        return {"triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}} # Fail-safe
+        st.error(f"Erro na Triagem: {e}")
+        return {"triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}} 
 
 def node_auto_resolver(state: AgentState):
     if not st.session_state.vectorstore:
@@ -153,7 +151,7 @@ def node_auto_resolver(state: AgentState):
         res = chain.invoke({"contexto": contexto, "pergunta": state["pergunta"]})
         return {"resposta": res.content}
     except Exception as e:
-        return {"resposta": f"Erro no LLM ({MODELO_ESCOLHIDO}): {e}"}
+        return {"resposta": f"Erro no LLM: {e}"}
 
 def node_abrir_chamado(state: AgentState):
     return {"resposta": f"Chamado aberto com urgência {state['triagem']['urgencia']}."}
@@ -184,49 +182,30 @@ if not st.session_state.grafo_app:
     st.session_state.grafo_app = workflow.compile(checkpointer=MemorySaver())
 
 # --- CHAT ---
-# 1. Exibir mensagens antigas
 for msg in st.session_state.mensagens:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-# 2. Input do usuário
 if prompt := st.chat_input("Dúvida sobre as políticas?"):
-    # Verifica API Key
-    if not os.environ.get("GOOGLE_API_KEY"):
-        st.error("Por favor, configure a API Key na barra lateral.")
-        st.stop()
+    if not os.environ.get("GOOGLE_API_KEY"): st.stop()
     
-    # Adiciona pergunta ao histórico e exibe
     st.session_state.mensagens.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    with st.chat_message("user"): st.markdown(prompt)
 
-    # 3. Processamento do Assistente
     with st.chat_message("assistant"):
-        with st.spinner(f"Consultando {MODELO_ESCOLHIDO}..."):
+        with st.spinner(f"Processando..."):
             resp = ""
             try:
-                # Executa o grafo
-                for ev in st.session_state.grafo_app.stream(
-                    {"pergunta": prompt}, 
-                    config={"configurable": {"thread_id": "user1"}}
-                ):
+                for ev in st.session_state.grafo_app.stream({"pergunta": prompt}, config={"configurable": {"thread_id": "user1"}}):
                     for v in ev.values():
-                        if "resposta" in v:
-                            resp = v["resposta"]
+                        if "resposta" in v: resp = v["resposta"]
+                if not resp: resp = "Não consegui gerar resposta."
                 
-                # Se após o loop a resposta estiver vazia, define mensagem padrão
-                if not resp:
-                    resp = "Não consegui encontrar uma resposta nos documentos."
-                
-                # --- AQUI ESTAVA O PROBLEMA ---
-                # Garanta que está exatamente assim, COM parênteses:
+                # --- CORREÇÃO DO DISPLAY (Sem o typo) ---
                 st.markdown(resp)
-                # ------------------------------
-
+                # ----------------------------------------
+                
             except Exception as e:
-                resp = f"Ocorreu um erro técnico: {e}"
+                resp = f"Erro técnico: {e}"
                 st.error(resp)
     
-    # Salva resposta no histórico
     st.session_state.mensagens.append({"role": "assistant", "content": resp})
