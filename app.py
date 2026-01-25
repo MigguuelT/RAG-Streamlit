@@ -33,9 +33,10 @@ with st.sidebar:
     st.header("📂 Configuração")
     
     # Input da API Key (Para segurança)
-    api_key = st.text_input("Gemini API Key", type="password")
-    if api_key:
-        os.environ["GOOGLE_API_KEY"] = api_key
+    api_key_input = st.text_input("Gemini API Key", type="password")
+    if api_key_input:
+        # CORREÇÃO 2: .strip() para remover espaços invisíveis
+        os.environ["GOOGLE_API_KEY"] = api_key_input.strip()
     
     st.divider()
     
@@ -53,6 +54,11 @@ def processar_pdfs(arquivos):
     if not arquivos:
         return None
     
+    # Verifica se a chave existe antes de começar
+    if not os.environ.get("GOOGLE_API_KEY"):
+        st.error("Por favor, insira a API Key antes de processar.")
+        return None
+
     docs = []
     with st.status("Processando documentos...", expanded=True) as status:
         # Cria diretório temporário para salvar os arquivos enviados
@@ -70,21 +76,27 @@ def processar_pdfs(arquivos):
         chunks = text_splitter.split_documents(docs)
         
         st.write("Gerando Embeddings e Indexando...")
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-        vectorstore = FAISS.from_documents(chunks, embeddings)
-        
-        status.update(label="Processamento Concluído!", state="complete", expanded=False)
-    
-    return vectorstore
+        try:
+            # Passa a chave explicitamente também nos embeddings
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/text-embedding-004",
+                google_api_key=os.environ.get("GOOGLE_API_KEY")
+            )
+            vectorstore = FAISS.from_documents(chunks, embeddings)
+            status.update(label="Processamento Concluído!", state="complete", expanded=False)
+            return vectorstore
+        except Exception as e:
+            st.error(f"Erro ao criar embeddings: {e}")
+            return None
 
 # Botão de processamento
-if processar_btn and uploaded_files and api_key:
+if processar_btn and uploaded_files:
     st.session_state.vectorstore = processar_pdfs(uploaded_files)
-    st.success("Base de conhecimento atualizada!")
+    if st.session_state.vectorstore:
+        st.success("Base de conhecimento atualizada!")
 
 # --- DEFINIÇÃO DO GRAFO (LÓGICA DO AGENTE) ---
 
-# Modelos Pydantic e TypedDict (Iguais ao Notebook)
 class TriagemOut(BaseModel):
     decisao: Literal["AUTO_RESOLVER", "PEDIR_INFO", "ABRIR_CHAMADO"] = Field(
         ..., description="Decisão baseada na pergunta."
@@ -96,35 +108,61 @@ class AgentState(TypedDict):
     triagem: Optional[dict]
     resposta: Optional[str]
 
-# Nós do Grafo
+# CORREÇÃO 1: Funções blindadas com passagem explícita de chave e try/except
 def node_triagem(state: AgentState):
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
-    structured_llm = llm.with_structured_output(TriagemOut)
-    
-    system_msg = """Classifique a mensagem:
-    - AUTO_RESOLVER: Dúvidas sobre documentos/políticas.
-    - PEDIR_INFO: Mensagens vagas.
-    - ABRIR_CHAMADO: Solicitações de exceção ou acesso."""
-    
-    prompt = ChatPromptTemplate.from_messages([("system", system_msg), ("human", "{input}")])
-    chain = prompt | structured_llm
-    resultado = chain.invoke({"input": state["pergunta"]})
-    return {"triagem": resultado.model_dump()}
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return {"triagem": {"decisao": "PEDIR_INFO", "urgencia": "BAIXA"}, "resposta": "Erro: API Key não configurada."}
+
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
+            temperature=0,
+            google_api_key=api_key
+        )
+        structured_llm = llm.with_structured_output(TriagemOut)
+        
+        system_msg = """Classifique a mensagem:
+        - AUTO_RESOLVER: Dúvidas sobre documentos/políticas.
+        - PEDIR_INFO: Mensagens vagas.
+        - ABRIR_CHAMADO: Solicitações de exceção ou acesso."""
+        
+        prompt = ChatPromptTemplate.from_messages([("system", system_msg), ("human", "{input}")])
+        chain = prompt | structured_llm
+        resultado = chain.invoke({"input": state["pergunta"]})
+        return {"triagem": resultado.model_dump()}
+        
+    except Exception as e:
+        print(f"Erro Triagem: {e}")
+        return {
+            "triagem": {"decisao": "PEDIR_INFO", "urgencia": "BAIXA"}, 
+            "resposta": "Desculpe, tive um problema técnico ao analisar sua pergunta. Verifique sua API Key."
+        }
 
 def node_auto_resolver(state: AgentState):
     if not st.session_state.vectorstore:
         return {"resposta": "Por favor, carregue os documentos na barra lateral primeiro."}
     
-    retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
-    docs = retriever.invoke(state["pergunta"])
-    contexto = "\n\n".join([d.page_content for d in docs])
+    api_key = os.environ.get("GOOGLE_API_KEY")
     
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
-    template = """Responda com base no contexto: {contexto}. Pergunta: {pergunta}"""
-    prompt = ChatPromptTemplate.from_template(template)
-    chain = prompt | llm
-    res = chain.invoke({"contexto": contexto, "pergunta": state["pergunta"]})
-    return {"resposta": res.content}
+    try:
+        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.invoke(state["pergunta"])
+        contexto = "\n\n".join([d.page_content for d in docs])
+        
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash", 
+            temperature=0,
+            google_api_key=api_key
+        )
+        template = """Responda com base no contexto: {contexto}. Pergunta: {pergunta}"""
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = prompt | llm
+        res = chain.invoke({"contexto": contexto, "pergunta": state["pergunta"]})
+        return {"resposta": res.content}
+        
+    except Exception as e:
+        return {"resposta": f"Erro ao consultar documentos: {str(e)}"}
 
 def node_abrir_chamado(state: AgentState):
     urgencia = state["triagem"]["urgencia"]
@@ -139,7 +177,7 @@ def route_triagem(state: AgentState):
     if decisao == "ABRIR_CHAMADO": return "abrir_chamado"
     return "pedir_info"
 
-# Compilação do Grafo (Cacheada para não recompilar a cada interação)
+# Compilação do Grafo
 if not st.session_state.grafo_app:
     workflow = StateGraph(AgentState)
     workflow.add_node("triagem", node_triagem)
@@ -165,28 +203,31 @@ for msg in st.session_state.mensagens:
 
 # Input do usuário
 if prompt := st.chat_input("Como posso ajudar?"):
-    if not api_key:
+    if not os.environ.get("GOOGLE_API_KEY"):
         st.error("Por favor, insira sua API Key na barra lateral.")
         st.stop()
 
-    # Adiciona msg do usuário ao histórico
     st.session_state.mensagens.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Executa o agente
     config = {"configurable": {"thread_id": "streamlit_user_1"}}
     
     with st.chat_message("assistant"):
         with st.spinner("Pensando..."):
-            # Invoca o grafo
             resposta_final = None
-            for event in st.session_state.grafo_app.stream({"pergunta": prompt}, config=config):
-                for key, value in event.items():
-                    if "resposta" in value:
-                        resposta_final = value["resposta"]
-            
-            st.markdown(resposta_final)
+            try:
+                for event in st.session_state.grafo_app.stream({"pergunta": prompt}, config=config):
+                    for key, value in event.items():
+                        if "resposta" in value:
+                            resposta_final = value["resposta"]
+                
+                if not resposta_final:
+                    resposta_final = "Não consegui gerar uma resposta."
+                    
+                st.markdown(resposta_final)
+            except Exception as e:
+                st.error(f"Ocorreu um erro na execução: {e}")
+                resposta_final = "Erro na execução."
     
-    # Salva resposta no histórico
     st.session_state.mensagens.append({"role": "assistant", "content": resposta_final})
