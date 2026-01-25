@@ -91,7 +91,7 @@ if processar_btn and uploaded_files:
 # --- LÓGICA DO AGENTE (LANGGRAPH) ---
 
 # SOLUÇÃO: Usar o modelo de produção estável (Cota Alta)
-MODELO_ESCOLHIDO = "gemini-2.0-flash"
+MODELO_ESCOLHIDO = "gemini-flash-latest"
 
 class TriagemOut(BaseModel):
     decisao: Literal["AUTO_RESOLVER", "PEDIR_INFO", "ABRIR_CHAMADO"]
