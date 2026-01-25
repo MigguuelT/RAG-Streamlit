@@ -124,7 +124,7 @@ def node_triagem(state: AgentState):
     try:
         # ALTERAÇÃO AQUI: Usando o nome mais específico do modelo
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash-latest", 
+            model="gemini-pro", 
             temperature=0,
             google_api_key=api_key
         )
@@ -182,7 +182,7 @@ def node_auto_resolver(state: AgentState):
         
         # ALTERAÇÃO AQUI: Usando o nome mais específico do modelo
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash-latest", 
+            model="gemini-pro", 
             temperature=0,
             google_api_key=api_key
         )
