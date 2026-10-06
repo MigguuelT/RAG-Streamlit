@@ -90,17 +90,34 @@ def processar_pdfs(arquivos, chave_api: str):
 
         status.write(f"Total de páginas lidas: {len(docs)}")
         
+        # 1. Divisão do texto em fragmentos
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        chunks = splitter.split_documents(docs)
-        status.write(f"Fragmentos gerados: {len(chunks)}")
+        raw_chunks = splitter.split_documents(docs)
         
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=chave_api
-        )
-        vectorstore = FAISS.from_documents(chunks, embeddings)
-        status.update(label="Indexação concluída com sucesso!", state="complete", expanded=False)
-        return vectorstore
+        # 2. Higienização: remove chunks vazios ou com apenas espaços (evita 400 INVALID_ARGUMENT)
+        chunks = [c for c in raw_chunks if c.page_content and c.page_content.strip()]
+        
+        if not chunks:
+            status.update(label="Nenhum texto válido foi extraído dos PDFs.", state="error")
+            st.error("Os arquivos enviados não contêm texto legível (podem ser PDFs digitalizados como imagem pura).")
+            return None
+
+        status.write(f"Fragmentos válidos para indexação: {len(chunks)}")
+        
+        try:
+            # 3. Atualização do modelo para a versão ativa: gemini-embedding-001
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/gemini-embedding-001",
+                google_api_key=chave_api
+            )
+            vectorstore = FAISS.from_documents(chunks, embeddings)
+            status.update(label="Indexação concluída com sucesso!", state="complete", expanded=False)
+            return vectorstore
+
+        except Exception as e:
+            status.update(label="Erro durante a geração de embeddings.", state="error")
+            st.error(f"Falha na API do Gemini: {e}")
+            return None
 
 if processar_btn:
     current_key = os.environ.get("GOOGLE_API_KEY")
