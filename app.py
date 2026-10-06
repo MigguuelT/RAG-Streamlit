@@ -32,7 +32,7 @@ if "mensagens" not in st.session_state:
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 
-# Modelo ativo oficial de alta velocidade e baixo custo
+# Modelo padrão oficial ativo
 MODELO_DEFAULT = "gemini-3.5-flash-lite"
 
 # --- BARRA LATERAL ---
@@ -61,7 +61,7 @@ with st.sidebar:
                 if m.supported_actions and "generateContent" in m.supported_actions
             ]
             
-            # Filtra modelos da geração atual (3.x)
+            # Filtra modelos da geração vigente (3.x)
             opcoes_gemini = [
                 m for m in todos_modelos 
                 if ("3.5" in m or "3." in m) and not m.endswith("-image")
@@ -112,7 +112,7 @@ def processar_pdfs(arquivos, chave_api: str):
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         raw_chunks = splitter.split_documents(docs)
         
-        # Higienização contra strings vazias
+        # Higienização contra fragmentos vazios
         chunks = [c for c in raw_chunks if c.page_content and c.page_content.strip()]
         
         if not chunks:
@@ -212,3 +212,121 @@ def node_auto_resolver(state: AgentState, config: RunnableConfig):
             timeout=20,
             max_retries=1
         )
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Responda à questão estritamente com base no contexto abaixo. Se não constar nos manuais, informe com clareza."),
+            ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}")
+        ])
+        
+        res = (prompt | llm).invoke({"contexto": contexto, "pergunta": state["pergunta"]})
+        return {"resposta": res.content}
+    except Exception as e:
+        return {"resposta": f"Falha na geração com o modelo {model_name}: {e}"}
+
+def node_abrir_chamado(state: AgentState):
+    urgencia = state.get("triagem", {}).get("urgencia", "MEDIA")
+    return {
+        "resposta": f"Identifiquei que sua solicitação requer intervenção direta da equipe técnica. **Chamado registrado com prioridade {urgencia}**."
+    }
+
+def node_pedir_info(state: AgentState):
+    return {
+        "resposta": "Olá! Poderia especificar melhor sua necessidade ou detalhar o sistema/erro que você está enfrentando?"
+    }
+
+def route_triagem(state: AgentState):
+    decisao = state.get("triagem", {}).get("decisao")
+    if decisao == "ABRIR_CHAMADO":
+        return "abrir_chamado"
+    if decisao == "PEDIR_INFO":
+        return "pedir_info"
+    return "auto_resolver"
+
+@st.cache_resource
+def compilar_grafo():
+    workflow = StateGraph(AgentState)
+    workflow.add_node("triagem", node_triagem)
+    workflow.add_node("auto_resolver", node_auto_resolver)
+    workflow.add_node("abrir_chamado", node_abrir_chamado)
+    workflow.add_node("pedir_info", node_pedir_info)
+    
+    workflow.add_edge(START, "triagem")
+    workflow.add_conditional_edges(
+        "triagem", 
+        route_triagem,
+        {
+            "abrir_chamado": "abrir_chamado",
+            "pedir_info": "pedir_info",
+            "auto_resolver": "auto_resolver"
+        }
+    )
+    workflow.add_edge("auto_resolver", END)
+    workflow.add_edge("abrir_chamado", END)
+    workflow.add_edge("pedir_info", END)
+    
+    return workflow.compile()
+
+grafo = compilar_grafo()
+
+# --- HISTÓRICO E INTERFACE DO CHAT ---
+for msg in st.session_state.mensagens:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+if prompt_user := st.chat_input("Ex: Como solicitar acesso à VPN corporativa?"):
+    current_key = os.environ.get("GOOGLE_API_KEY")
+    if not current_key:
+        st.error("Configure sua Gemini API Key antes de enviar perguntas.")
+        st.stop()
+        
+    st.session_state.mensagens.append({"role": "user", "content": prompt_user})
+    with st.chat_message("user"):
+        st.markdown(prompt_user)
+
+    retriever = (
+        st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
+        if st.session_state.vectorstore else None
+    )
+
+    with st.chat_message("assistant"):
+        status_box = st.status("Processando atendimento...", expanded=True)
+        
+        config = RunnableConfig(
+            configurable={
+                "google_api_key": current_key,
+                "model_name": modelo_selecionado,
+                "retriever": retriever
+            }
+        )
+        
+        resposta_final = ""
+        resultado_triagem = None
+        
+        try:
+            status_box.write(f"⚙️ Modelo ativo: `{modelo_selecionado}`")
+            status_box.write("🧭 Executando triagem...")
+            
+            for event in grafo.stream({"pergunta": prompt_user}, config=config):
+                for node_name, output in event.items():
+                    if node_name == "triagem" and "triagem" in output:
+                        resultado_triagem = output["triagem"]
+                        dec = resultado_triagem.get("decisao")
+                        status_box.write(f"Classificação: `{dec}`")
+                        if dec == "AUTO_RESOLVER":
+                            status_box.write("🔍 Buscando políticas nos documentos...")
+                    if "resposta" in output:
+                        resposta_final = output["resposta"]
+            
+            status_box.update(label="Concluído!", state="complete", expanded=False)
+            
+            if resultado_triagem:
+                decisao = resultado_triagem.get("decisao")
+                urgencia = resultado_triagem.get("urgencia")
+                st.caption(f"🧭 Triagem: `{decisao}` | Prioridade: `{urgencia}` | Modelo: `{modelo_selecionado}`")
+            
+            st.markdown(resposta_final)
+            st.session_state.mensagens.append({"role": "assistant", "content": resposta_final})
+            
+        except Exception as err:
+            status_box.update(label="Falha na execução", state="error", expanded=False)
+            st.error(f"Erro no processamento: {err}")
