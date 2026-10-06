@@ -199,7 +199,7 @@ def node_auto_resolver(state: AgentState, config: RunnableConfig):
     model_name = config["configurable"].get("model_name", MODELO_DEFAULT)
     
     if not retriever:
-        return {"resposta": "Nenhum documento carregado para consulta. Por favor, adicione os PDFs na barra lateral."}
+        return {"resposta": "Não localizei documentos carregados. Por favor, faça o upload das políticas na barra lateral."}
     
     try:
         docs = retriever.invoke(state["pergunta"])
@@ -207,19 +207,45 @@ def node_auto_resolver(state: AgentState, config: RunnableConfig):
         
         llm = ChatGoogleGenerativeAI(
             model=model_name,
-            temperature=0.1,
+            temperature=0.2, # Leve flexibilidade para soar mais conversacional
             google_api_key=key,
             timeout=20,
             max_retries=1
         )
         
+        # Prompt humanizado: remove jargões robóticos e orienta como analista do Service Desk
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Responda à questão estritamente com base no contexto abaixo. Se não constar nos manuais, informe com clareza."),
-            ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}")
+            ("system", (
+                "Você é um analista especialista de Service Desk corporativo prestando suporte direto a um colega de trabalho.\n\n"
+                "Diretrizes de comunicação:\n"
+                "- Seja direto, empático e resolutivo.\n"
+                "- PROIBIDO usar introduções robóticas como 'Com base no contexto fornecido', 'Segundo o documento' ou 'O texto menciona'.\n"
+                "- Apresente os valores e regras de forma clara e natural (use negrito para limites ou termos importantes).\n"
+                "- Se um detalhe não constar na política, comunique com naturalidade e oriente o próximo passo prático (ex: consultar o gestor ou abrir chamado para exceção).\n\n"
+                "Informações oficiais da empresa para consulta:\n{contexto}"
+            )),
+            ("human", "{pergunta}")
         ])
         
         res = (prompt | llm).invoke({"contexto": contexto, "pergunta": state["pergunta"]})
-        return {"resposta": res.content}
+        
+        # --- HIGIENIZAÇÃO DE CONTEÚDO (Evita exibir dicionários e assinaturas brutas) ---
+        texto_limpo = ""
+        if isinstance(res.content, str):
+            texto_limpo = res.content
+        elif isinstance(res.content, list):
+            partes = []
+            for bloco in res.content:
+                if isinstance(bloco, dict) and bloco.get("type") == "text":
+                    partes.append(bloco.get("text", ""))
+                elif isinstance(bloco, str):
+                    partes.append(bloco)
+            texto_limpo = "".join(partes)
+        else:
+            texto_limpo = str(res.content)
+            
+        return {"resposta": texto_limpo.strip()}
+        
     except Exception as e:
         return {"resposta": f"Falha na geração com o modelo {model_name}: {e}"}
 
