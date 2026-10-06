@@ -32,37 +32,47 @@ if "mensagens" not in st.session_state:
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
 
-# --- BARRA LATERAL (CONFIGURAÇÕES E DIAGNÓSTICO) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     st.header("📂 Configurações")
     
-    # 1. Obtenção da API Key
+    # 1. API Key
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
     if not api_key:
         api_key = st.text_input("Gemini API Key", type="password")
     
     if api_key:
         os.environ["GOOGLE_API_KEY"] = api_key.strip()
-        st.success("API Key pronta para uso.")
+        st.success("API Key autenticada.")
     else:
         st.warning("Insira sua Gemini API Key para prosseguir.")
 
-    # 2. Diagnóstico usando o SDK unificado (google-genai)
+    # 2. Seleção de Modelo LLM (evita erros 404 por modelos descontinuados)
+    modelo_selecionado = "gemini-2.5-flash"
     if api_key:
-        st.divider()
-        with st.expander("🛠️ Diagnóstico de Modelos (google-genai)"):
-            try:
-                # Instância isolada do Client sem alterar estado global
-                client = genai.Client(api_key=api_key.strip())
-                modelos_disponiveis = [
-                    m.name.replace("models/", "")
-                    for m in client.models.list()
-                    if m.supported_actions and "generateContent" in m.supported_actions
-                ]
-                st.caption(f"Modelos com suporte a texto: {len(modelos_disponiveis)}")
-                st.write(modelos_disponiveis[:12])
-            except Exception as e:
-                st.error(f"Falha na listagem de modelos: {e}")
+        try:
+            client = genai.Client(api_key=api_key.strip())
+            modelos_disponiveis = [
+                m.name.replace("models/", "")
+                for m in client.models.list()
+                if m.supported_actions and "generateContent" in m.supported_actions
+            ]
+            # Filtra apenas a família gemini para o seletor
+            modelos_gemini = [m for m in modelos_disponiveis if "gemini" in m]
+            
+            if modelos_gemini:
+                indice_padrao = (
+                    modelos_gemini.index("gemini-2.5-flash") 
+                    if "gemini-2.5-flash" in modelos_gemini else 0
+                )
+                modelo_selecionado = st.selectbox(
+                    "Modelo Generativo (LLM)", 
+                    options=modelos_gemini, 
+                    index=indice_padrao
+                )
+        except Exception as e:
+            st.caption(f"Não foi possível listar modelos automaticamente: {e}")
+            modelo_selecionado = st.text_input("Nome do Modelo", value="gemini-2.5-flash")
 
     # 3. Upload de Documentos
     st.divider()
@@ -90,22 +100,20 @@ def processar_pdfs(arquivos, chave_api: str):
 
         status.write(f"Total de páginas lidas: {len(docs)}")
         
-        # 1. Divisão do texto em fragmentos
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
         raw_chunks = splitter.split_documents(docs)
         
-        # 2. Higienização: remove chunks vazios ou com apenas espaços (evita 400 INVALID_ARGUMENT)
+        # Higienização: remove chunks sem texto para evitar HTTP 400
         chunks = [c for c in raw_chunks if c.page_content and c.page_content.strip()]
         
         if not chunks:
-            status.update(label="Nenhum texto válido foi extraído dos PDFs.", state="error")
-            st.error("Os arquivos enviados não contêm texto legível (podem ser PDFs digitalizados como imagem pura).")
+            status.update(label="Nenhum texto legível encontrado nos PDFs.", state="error")
+            st.error("Os PDFs carregados não possuem camada de texto digitalizável.")
             return None
 
         status.write(f"Fragmentos válidos para indexação: {len(chunks)}")
         
         try:
-            # 3. Atualização do modelo para a versão ativa: gemini-embedding-001
             embeddings = GoogleGenerativeAIEmbeddings(
                 model="models/gemini-embedding-001",
                 google_api_key=chave_api
@@ -113,10 +121,9 @@ def processar_pdfs(arquivos, chave_api: str):
             vectorstore = FAISS.from_documents(chunks, embeddings)
             status.update(label="Indexação concluída com sucesso!", state="complete", expanded=False)
             return vectorstore
-
         except Exception as e:
-            status.update(label="Erro durante a geração de embeddings.", state="error")
-            st.error(f"Falha na API do Gemini: {e}")
+            status.update(label="Erro na criação dos embeddings.", state="error")
+            st.error(f"Falha ao indexar vetores: {e}")
             return None
 
 if processar_btn:
@@ -131,8 +138,6 @@ if processar_btn:
         st.sidebar.warning("Selecione ao menos um arquivo PDF.")
 
 # --- DEFINIÇÃO DO AGENTE (LANGGRAPH) ---
-MODELO_LLM = "gemini-1.5-flash"
-
 class TriagemOut(BaseModel):
     decisao: Literal["AUTO_RESOLVER", "PEDIR_INFO", "ABRIR_CHAMADO"] = Field(
         description="Ação resolutiva recomendada."
@@ -148,8 +153,10 @@ class AgentState(TypedDict):
 
 def node_triagem(state: AgentState, config: RunnableConfig):
     key = config["configurable"].get("google_api_key")
+    model_name = config["configurable"].get("model_name", "gemini-2.5-flash")
+    
     llm = ChatGoogleGenerativeAI(
-        model=MODELO_LLM,
+        model=model_name,
         temperature=0.0,
         google_api_key=key
     )
@@ -161,7 +168,7 @@ def node_triagem(state: AgentState, config: RunnableConfig):
             "1. AUTO_RESOLVER: Dúvidas sobre regras, procedimentos, políticas ou como realizar uma tarefa.\n"
             "2. ABRIR_CHAMADO: Falha técnica, erro em sistema, solicitação explícita de acessos ou hardware.\n"
             "3. PEDIR_INFO: Saudações soltas ('olá', 'boa tarde') ou mensagens com detalhes insuficientes.\n"
-            "Em caso de dúvida entre dúvida conceitual e ação corretiva, priorize AUTO_RESOLVER."
+            "Em caso de dúvida entre consulta e chamado, priorize AUTO_RESOLVER."
         )),
         ("human", "{input}")
     ])
@@ -169,42 +176,50 @@ def node_triagem(state: AgentState, config: RunnableConfig):
     try:
         resultado = (prompt | structured_llm).invoke({"input": state["pergunta"]})
         return {"triagem": resultado.model_dump()}
-    except Exception:
-        return {"triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"}}
+    except Exception as e:
+        # Registra o erro de forma explícita sem mascaramento silencioso
+        return {
+            "triagem": {"decisao": "AUTO_RESOLVER", "urgencia": "BAIXA"},
+            "resposta": f"Aviso de execução na triagem: {e}"
+        }
 
 def node_auto_resolver(state: AgentState, config: RunnableConfig):
     retriever = config["configurable"].get("retriever")
     key = config["configurable"].get("google_api_key")
+    model_name = config["configurable"].get("model_name", "gemini-2.5-flash")
     
     if not retriever:
-        return {"resposta": "Nenhum documento carregado para consulta. Por favor, adicione os manuais em PDF na barra lateral."}
+        return {"resposta": "Nenhum documento carregado para consulta. Por favor, envie os PDFs na barra lateral."}
     
-    docs = retriever.invoke(state["pergunta"])
-    contexto = "\n\n".join([d.page_content for d in docs]) if docs else "Nenhuma informação relevante localizada."
-    
-    llm = ChatGoogleGenerativeAI(
-        model=MODELO_LLM,
-        temperature=0.1,
-        google_api_key=key
-    )
-    
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Responda à questão estritamente com base no contexto abaixo. Se a política não cobrir o assunto, informe de maneira clara que a base não possui essa diretriz."),
-        ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}")
-    ])
-    
-    res = (prompt | llm).invoke({"contexto": contexto, "pergunta": state["pergunta"]})
-    return {"resposta": res.content}
+    try:
+        docs = retriever.invoke(state["pergunta"])
+        contexto = "\n\n".join([d.page_content for d in docs]) if docs else "Nenhuma informação relevante localizada."
+        
+        llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0.1,
+            google_api_key=key
+        )
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Responda à questão estritamente com base no contexto abaixo. Se a base não cobrir o assunto, diga claramente que a política interna não possui essa informação."),
+            ("human", "Contexto:\n{contexto}\n\nPergunta: {pergunta}")
+        ])
+        
+        res = (prompt | llm).invoke({"contexto": contexto, "pergunta": state["pergunta"]})
+        return {"resposta": res.content}
+    except Exception as e:
+        return {"resposta": f"Erro ao consultar o modelo ({model_name}): {e}"}
 
 def node_abrir_chamado(state: AgentState):
     urgencia = state.get("triagem", {}).get("urgencia", "MEDIA")
     return {
-        "resposta": f"Sua solicitação requer intervenção direta da equipe de TI. **Chamado registrado com prioridade {urgencia}**."
+        "resposta": f"Sua solicitação requer intervenção direta da equipe técnica. **Chamado registrado com prioridade {urgencia}**."
     }
 
 def node_pedir_info(state: AgentState):
     return {
-        "resposta": "Olá! Poderia detalhar o que você precisa ou especificar qual problema/sistema você está enfrentando?"
+        "resposta": "Olá! Poderia especificar melhor sua necessidade ou detalhar o sistema/erro encontrado?"
     }
 
 def route_triagem(state: AgentState):
@@ -254,10 +269,11 @@ if prompt_user := st.chat_input("Ex: Como solicitar acesso à VPN?"):
     )
 
     with st.chat_message("assistant"):
-        with st.spinner("Analisando demanda..."):
+        with st.spinner("Analisando solicitação..."):
             config = RunnableConfig(
                 configurable={
                     "google_api_key": current_key,
+                    "model_name": modelo_selecionado,
                     "retriever": retriever
                 }
             )
@@ -275,7 +291,7 @@ if prompt_user := st.chat_input("Ex: Como solicitar acesso à VPN?"):
             if resultado_triagem:
                 decisao = resultado_triagem.get("decisao")
                 urgencia = resultado_triagem.get("urgencia")
-                st.caption(f"🧭 Triagem: `{decisao}` | Prioridade: `{urgencia}`")
+                st.caption(f"🧭 Triagem: `{decisao}` | Prioridade: `{urgencia}` | Modelo: `{modelo_selecionado}`")
             
             st.markdown(resposta_final)
             
